@@ -153,19 +153,40 @@ co2_g = co2_mg / 1000
 
 Optionally: energy_kwh = (co2_g / 1000) / grid_emission_factor_kg_per_kwh
 
-Displays this in a short, clearly labeled footer that states it is:
+Selects a real-world comparison based on the energy magnitude (see section 6.1 below).
 
-an estimate,
-
-based on remote data-center operations, not local hardware,
-
-and meant for awareness, not audit-grade reporting.
+Displays this in a short, clearly labeled footer that states it is an estimate meant for awareness, not audit-grade reporting.
 
 All constants are exposed via configuration so they can be updated as:
 
 Providers publish more detailed disclosures, or
 
-You calibrate against real account-level data (e.g., AWS’s carbon footprint tool + token logs).
+You calibrate against real account-level data (e.g., AWS's carbon footprint tool + token logs).
+
+6.1 Real-world comparisons
+
+To make the numbers more relatable, the extension displays a comparison to everyday activities. The comparison tier is selected based on the energy magnitude:
+
+| Energy Range | Comparison | Source |
+|--------------|------------|--------|
+| < 0.0001 kWh | 💡 Seconds of LED light | 10W LED bulb = 0.01 kWh/hour |
+| 0.0001–0.005 kWh | 🔋 % of phone charge | Full smartphone charge ≈ 0.015 kWh |
+| 0.005–0.05 kWh | 💻 Minutes of laptop use | Typical laptop ≈ 50W = 0.05 kWh/hour |
+| > 0.05 kWh | 📺 Minutes of TV | Typical TV ≈ 100W = 0.1 kWh/hour |
+
+When energy display is disabled, CO₂-based comparisons are used instead:
+
+| CO₂ Range | Comparison | Source |
+|-----------|------------|--------|
+| < 1g | 🌬️ Human breaths | ~200mg CO₂ per breath |
+| 1–10g | 🚶 Meters of walking | ~0.05g CO₂ per meter (human metabolism) |
+| > 10g | 🚗 Kilometers of driving | ~120g CO₂ per km (average car) |
+
+These comparisons are intentionally approximate and meant to provide intuitive context, not precise equivalences.
+
+6.2 Preventing LLM mimicry
+
+A technical note: when LLMs see emission footers in their conversation history, they may learn the pattern and generate their own (often inaccurate) carbon estimates. To prevent this, the filter strips emission footers from previous assistant messages before they're sent to the LLM. This ensures only the filter's calculated estimates appear, not LLM-generated imitations.
 
 7. Suggested further reading / potential sources to link in the repo
 
