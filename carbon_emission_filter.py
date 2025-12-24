@@ -36,6 +36,32 @@ DEFAULT_MODEL_CO2_MG_PER_TOKEN = {
 }
 
 
+# Real-world energy/CO2 comparisons for context
+# Each entry: (threshold_kwh, unit_kwh, label_singular, label_plural, emoji)
+# Sorted from smallest to largest threshold
+ENERGY_COMPARISONS = [
+    # Tiny values: LED bulb seconds (10W LED = 0.01 kWh/hour = 2.78e-6 kWh/sec)
+    (0.0, 2.78e-6, "second of LED light", "seconds of LED light", "💡"),
+    # Small values: smartphone charge % (~0.015 kWh full charge = 0.00015 kWh/%)
+    (0.0001, 0.00015, "% of a phone charge", "% of a phone charge", "🔋"),
+    # Medium values: minutes of laptop use (~50W = 0.000833 kWh/min)
+    (0.005, 0.000833, "minute of laptop use", "minutes of laptop use", "💻"),
+    # Larger values: minutes of TV (~100W = 0.00167 kWh/min)
+    (0.05, 0.00167, "minute of TV", "minutes of TV", "📺"),
+]
+
+# CO2-based comparisons (when energy not shown or for additional context)
+# Each entry: (threshold_g, unit_g, label_singular, label_plural, emoji)
+CO2_COMPARISONS = [
+    # Human breath: ~200mg = 0.2g CO2 per breath
+    (0.0, 0.2, "human breath", "human breaths", "🌬️"),
+    # Walking: ~0.05g CO2 per meter (from human metabolism)
+    (1.0, 0.05, "meter of walking", "meters of walking", "🚶"),
+    # Driving: ~120g CO2 per km = 0.12g per meter
+    (10.0, 120.0, "km of driving", "km of driving", "🚗"),
+]
+
+
 class Filter:
     """
     OpenWebUI Filter that estimates energy use and CO2 emissions for remote LLM calls.
@@ -58,9 +84,9 @@ class Filter:
             default=True,
             description="If true, show estimated energy in kWh as well as CO2."
         )
-        show_per_1k_tokens: bool = Field(
+        show_comparison: bool = Field(
             default=True,
-            description="If true, show normalized estimates per 1,000 tokens."
+            description="If true, show a real-world comparison (e.g., 'like X seconds of LED light')."
         )
         debug_logging: bool = Field(
             default=False,
@@ -204,6 +230,62 @@ class Filter:
 
         return (prompt_tokens, completion_tokens, total_tokens)
 
+    def _get_comparison_string(self, energy_kwh: Optional[float], co2_g: float) -> str:
+        """
+        Generate a real-world comparison string for the energy/CO2 values.
+
+        Args:
+            energy_kwh: Energy consumption in kWh (or None)
+            co2_g: CO2 emissions in grams
+
+        Returns:
+            str: A human-readable comparison string
+        """
+        # Try energy-based comparison first (if available)
+        if energy_kwh is not None and energy_kwh > 0:
+            # Find the appropriate comparison tier
+            selected = ENERGY_COMPARISONS[0]  # Default to smallest
+            for comparison in ENERGY_COMPARISONS:
+                threshold, _, _, _, _ = comparison
+                if energy_kwh >= threshold:
+                    selected = comparison
+
+            threshold, unit_kwh, singular, plural, emoji = selected
+            value = energy_kwh / unit_kwh
+
+            if value < 0.1:
+                formatted = f"{value:.2f}"
+            elif value < 10:
+                formatted = f"{value:.1f}"
+            else:
+                formatted = f"{value:.0f}"
+
+            label = singular if float(formatted) == 1.0 else plural
+            return f"{emoji} About {formatted} {label}"
+
+        # Fallback to CO2-based comparison
+        if co2_g > 0:
+            selected = CO2_COMPARISONS[0]
+            for comparison in CO2_COMPARISONS:
+                threshold, _, _, _, _ = comparison
+                if co2_g >= threshold:
+                    selected = comparison
+
+            threshold, unit_g, singular, plural, emoji = selected
+            value = co2_g / unit_g
+
+            if value < 0.1:
+                formatted = f"{value:.2f}"
+            elif value < 10:
+                formatted = f"{value:.1f}"
+            else:
+                formatted = f"{value:.0f}"
+
+            label = singular if float(formatted) == 1.0 else plural
+            return f"{emoji} About {formatted} {label}"
+
+        return ""
+
     def _format_footer(
         self,
         co2_g: float,
@@ -233,21 +315,14 @@ class Filter:
 
         lines.append(main_line)
 
-        # Per-1k tokens line (if enabled and we have tokens)
-        if self.valves.show_per_1k_tokens and total_tokens > 0:
-            factor = 1000.0 / total_tokens
-            co2_per_1k = co2_g * factor
-
-            if energy_kwh is not None and self.valves.show_energy_kwh:
-                energy_per_1k = energy_kwh * factor
-                per_1k_line = f"> Approx. per 1,000 tokens: {energy_per_1k:.6f} kWh, {co2_per_1k:.3f} g CO2e"
-            else:
-                per_1k_line = f"> Approx. per 1,000 tokens: {co2_per_1k:.3f} g CO2e"
-
-            lines.append(per_1k_line)
+        # Real-world comparison (if enabled)
+        if self.valves.show_comparison:
+            comparison = self._get_comparison_string(energy_kwh, co2_g)
+            if comparison:
+                lines.append(f"> {comparison}")
 
         # Disclaimer line
-        lines.append("> _Remote LLM call via OpenRouter/Bedrock; highly approximate and for awareness only._")
+        lines.append("> _Approximate estimate for awareness only._")
 
         return "\n".join(lines)
 
@@ -378,7 +453,8 @@ if __name__ == "__main__":
     result1 = f.outlet(body1)
     assistant_msg1 = [m for m in result1["messages"] if m["role"] == "assistant"][-1]
     print(f"Footer appended: {'CO2e' in assistant_msg1['content']}")
-    print(f"Content preview: ...{assistant_msg1['content'][-200:]}\n")
+    print(f"Has comparison: {'About' in assistant_msg1['content']}")
+    print(f"Content preview: ...{assistant_msg1['content'][-300:]}\n")
 
     # Test 2: Bedrock case without usage data
     print("Test 2: Bedrock without usage data")
@@ -392,7 +468,8 @@ if __name__ == "__main__":
     result2 = f.outlet(body2)
     assistant_msg2 = [m for m in result2["messages"] if m["role"] == "assistant"][-1]
     print(f"Footer appended: {'CO2e' in assistant_msg2['content']}")
-    print(f"Content preview: ...{assistant_msg2['content'][-200:]}\n")
+    print(f"Has comparison: {'About' in assistant_msg2['content']}")
+    print(f"Content preview: ...{assistant_msg2['content'][-300:]}\n")
 
     # Test 3: Filter disabled
     print("Test 3: Filter disabled")
@@ -409,5 +486,29 @@ if __name__ == "__main__":
     assistant_msg3 = [m for m in result3["messages"] if m["role"] == "assistant"][-1]
     print(f"Footer NOT appended (disabled): {'CO2e' not in assistant_msg3['content']}")
     print(f"Content: {assistant_msg3['content']}\n")
+
+    # Test 4: Comparison tiers
+    print("Test 4: Comparison string tiers")
+    f_test = Filter()
+
+    # Tiny energy (LED seconds)
+    comp1 = f_test._get_comparison_string(0.00001, 0.004)
+    print(f"Tiny (0.00001 kWh): {comp1}")
+
+    # Small energy (phone charge %)
+    comp2 = f_test._get_comparison_string(0.0005, 0.2)
+    print(f"Small (0.0005 kWh): {comp2}")
+
+    # Medium energy (laptop minutes)
+    comp3 = f_test._get_comparison_string(0.01, 4.0)
+    print(f"Medium (0.01 kWh): {comp3}")
+
+    # Larger energy (TV minutes)
+    comp4 = f_test._get_comparison_string(0.1, 40.0)
+    print(f"Large (0.1 kWh): {comp4}")
+
+    # CO2-only fallback (no energy)
+    comp5 = f_test._get_comparison_string(None, 1.5)
+    print(f"CO2 only (1.5g): {comp5}\n")
 
     print("All tests completed!")
