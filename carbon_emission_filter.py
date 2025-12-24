@@ -1,12 +1,13 @@
 """
 title: Remote LLM Energy Estimator
 author: CUNY AI Lab
-version: 0.1.0
+version: 0.2.0
 description: Estimate energy use and CO₂e per exchange for models called via OpenRouter and AWS Bedrock using per-token emission factors.
 license: MIT
 """
 
 import json
+import re
 import time
 from typing import Optional, Tuple
 
@@ -326,11 +327,40 @@ class Filter:
 
         return "\n".join(lines)
 
+    def _strip_emission_footers(self, content: str) -> str:
+        """
+        Remove carbon emission footers from message content.
+
+        This prevents the LLM from learning the footer pattern from conversation
+        history and generating its own emission estimates.
+
+        Args:
+            content: The message content string
+
+        Returns:
+            str: Content with emission footers removed
+        """
+        if not content:
+            return content
+
+        # Pattern matches our footer format:
+        # > **Estimated data-center emissions...
+        # > 💡/🔋/💻/📺 About X...
+        # > _Approximate estimate for awareness only._
+        #
+        # Also catches LLM-generated variants with similar patterns
+        pattern = r'\n\n> \*?\*?Estimated data[‑-]center emissions.*?(?:awareness only\.?_?|footprint\.?)(?:\n|$)'
+
+        cleaned = re.sub(pattern, '', content, flags=re.DOTALL | re.IGNORECASE)
+
+        return cleaned.rstrip()
+
     def inlet(self, body: dict, __user__: Optional[dict] = None) -> dict:
         """
         Process incoming request (before model call).
 
-        Records a timestamp for potential latency tracking.
+        Strips emission footers from conversation history to prevent the LLM
+        from learning and mimicking the pattern. Also records timestamp.
 
         Args:
             body: The request body
@@ -342,6 +372,15 @@ class Filter:
         try:
             if not self.valves.enabled:
                 return body
+
+            # Strip emission footers from previous assistant messages
+            # This prevents the LLM from learning the pattern
+            messages = body.get("messages", [])
+            for msg in messages:
+                if msg.get("role") == "assistant":
+                    content = msg.get("content", "")
+                    if content and "Estimated data" in content:
+                        msg["content"] = self._strip_emission_footers(content)
 
             # Record start timestamp for potential latency tracking
             if "metadata" not in body:
@@ -510,5 +549,41 @@ if __name__ == "__main__":
     # CO2-only fallback (no energy)
     comp5 = f_test._get_comparison_string(None, 1.5)
     print(f"CO2 only (1.5g): {comp5}\n")
+
+    # Test 5: Footer stripping
+    print("Test 5: Footer stripping from conversation history")
+    f_strip = Filter()
+
+    # Test our filter's footer format
+    test_content1 = """Here is my response about climate change.
+
+> **Estimated data-center emissions for this exchange:** 0.000300 kWh (~0.120 g CO2e)
+> 🔋 About 2.0 % of a phone charge
+> _Approximate estimate for awareness only._"""
+
+    stripped1 = f_strip._strip_emission_footers(test_content1)
+    print(f"Our footer stripped: {'Estimated data' not in stripped1}")
+    print(f"Content preserved: {'climate change' in stripped1}")
+
+    # Test LLM-generated footer format (with non-breaking hyphen)
+    test_content2 = """Here is my response.
+
+> **Estimated data‑center emissions for this exchange:** 0.001072 kWh (~0.43 g CO₂e)
+> 🔋 Roughly 5 % of a phone charge – just a tiny reminder that the world's computing also has a footprint."""
+
+    stripped2 = f_strip._strip_emission_footers(test_content2)
+    print(f"LLM footer stripped: {'Estimated data' not in stripped2}")
+
+    # Test inlet strips footers from history
+    body_history = {
+        "messages": [
+            {"role": "user", "content": "What is AI?"},
+            {"role": "assistant", "content": test_content1},
+            {"role": "user", "content": "Tell me more"},
+        ]
+    }
+    f_strip.inlet(body_history)
+    assistant_content = body_history["messages"][1]["content"]
+    print(f"Inlet strips history: {'Estimated data' not in assistant_content}\n")
 
     print("All tests completed!")
